@@ -56,7 +56,7 @@ Definition of Done, no se pospone.
 |---|---|---|
 | `skills/desarrollo-seguro/` (skill para Claude Code) | ✅ | INV-1..8 en tiempo de generación + DoD auto-verificado (INV-8) |
 | `semgrep/security-rules.yml` | ✅ (starter) | INV-4/6/7 (backstop) |
-| `.github/workflows/security-gate.yml` | ✅ (starter) | corre lint+build+semgrep+gitleaks+audit |
+| `.github/workflows/security-gate.yml` (reusable, `workflow_call`) | ✅ | corre lint+build+semgrep+gitleaks+audit + test negativo RLS |
 | `eslint/security.config.mjs` (reglas en `error`) | ✅ | INV-1/3 + type-safety |
 | `server-only` guard | ⏳ próximo | INV-1/2/3 (build falla) |
 | `templates/edge-function/` (golden path) | ✅ | INV-3/4 por construcción |
@@ -66,9 +66,25 @@ Definition of Done, no se pospone.
 
 ## Cómo se adopta
 
-1. Copiar `semgrep/` y `.github/workflows/security-gate.yml` al repo destino.
-2. Ajustar los scripts (`typecheck`/`lint`/`build`) a los del proyecto.
-3. El gate corre en cada PR: **build rojo = no merge**. Ese es el estándar, no el doc.
+**La skill (guía a Claude en tiempo de generación):**
+
+```
+/plugin marketplace add svillaseca-capitalinteligente/security-standards-supabase
+/plugin install security-standards@security-standards
+```
+
+**El CI gate (backstop determinista):**
+
+1. Copiar `templates/github/security-gate-caller.yml` al repo destino como
+   `.github/workflows/security-gate.yml` (es un caller de ~25 líneas; la lógica
+   vive acá y las mejoras llegan solas — anti-drift).
+2. Ajustar `package_manager` y `protected_tables`; configurar los secrets
+   `SUPABASE_URL`/`SUPABASE_ANON_KEY` si se usa el test negativo de RLS.
+3. Activar branch protection exigiendo el check: **build rojo = no merge**.
+   Ese es el estándar, no el doc.
+
+> Requisito: este repo debe permitir reusable workflows hacia los repos destino
+> (Settings → Actions → General → Access) o ser público.
 
 > Nota: los checks son deterministas por diseño. Lo que la IA escribe pasa por el
 > mismo portero que lo que escribe un humano.

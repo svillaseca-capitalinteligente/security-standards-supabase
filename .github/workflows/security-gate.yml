@@ -1,18 +1,43 @@
-# Security gate — el portero determinista.
-# Corre en cada PR y push. Build rojo = no merge. Ese es el estándar (no el doc).
-# Ajusta los scripts (typecheck/lint/build) a los del proyecto que lo adopta.
+# Security gate — el portero determinista, como REUSABLE WORKFLOW.
+#
+# Este workflow NO corre en este repo (solo se activa vía workflow_call).
+# Los proyectos lo consumen por referencia — ver templates/github/security-gate-caller.yml:
+#
+#   jobs:
+#     gate:
+#       uses: svillaseca-capitalinteligente/security-standards-supabase/.github/workflows/security-gate.yml@main
+#
+# Ventaja sobre copiar el archivo: las mejoras al estándar llegan a todos los
+# proyectos sin re-copiar nada (anti-drift). Requiere que este repo permita
+# reusable workflows: Settings → Actions → General → Access.
+#
+# Build rojo = no merge (con branch protection exigiendo este check).
 
 name: security-gate
 
 on:
-  pull_request:
-  push:
-    branches: [main, master]
-
-# Cancelar corridas viejas del mismo PR/branch.
-concurrency:
-  group: security-gate-${{ github.ref }}
-  cancel-in-progress: true
+  workflow_call:
+    inputs:
+      package_manager:
+        description: "npm o pnpm"
+        type: string
+        default: npm
+      node_version:
+        type: string
+        default: "20"
+      pnpm_version:
+        description: "Solo si package_manager=pnpm y el repo no declara packageManager"
+        type: string
+        default: "9"
+      protected_tables:
+        description: "Coma-separado: tablas que deben estar cerradas a anon (test negativo RLS). Vacío = test omitido (visible en el log)."
+        type: string
+        default: ""
+    secrets:
+      SUPABASE_URL:
+        required: false
+      SUPABASE_ANON_KEY:
+        required: false
 
 jobs:
   gate:
@@ -22,68 +47,92 @@ jobs:
         with:
           fetch-depth: 0 # gitleaks necesita historial
 
-      - uses: pnpm/action-setup@v4
+      - if: inputs.package_manager == 'pnpm'
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ inputs.pnpm_version }}
+
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
-          cache: pnpm
+          node-version: ${{ inputs.node_version }}
+          cache: ${{ inputs.package_manager }}
 
       - name: Install (lockfile congelado)
-        run: pnpm install --frozen-lockfile
+        run: |
+          if [ "${{ inputs.package_manager }}" = "pnpm" ]; then
+            pnpm install --frozen-lockfile
+          else
+            npm ci
+          fi
 
-      # ── INV type-safety — el typecheck no puede fallar ──────────────────────
+      # ── INV type-safety ──────────────────────────────────────────────────────
       - name: Typecheck
-        run: pnpm -r typecheck
+        run: ${{ inputs.package_manager }} run --if-present typecheck
 
-      # ── INV-1/3 — lint estricto (reglas de seguridad en `error`) ────────────
-      # Con la config ESLint estricta del estándar, esto bloquea (no es advisory).
+      # ── INV-1/3 — lint estricto (reglas de seguridad en `error`) ─────────────
       - name: Lint
-        run: pnpm -r lint
+        run: ${{ inputs.package_manager }} run lint
 
-      # ── INV-1/2/3 — build: aquí fallan las violaciones de `server-only` ─────
-      # Si un componente cliente importa dominio/identidad marcados server-only,
-      # el build de Next revienta acá. Es el gate primario de la fuga de bundle.
+      # ── INV-1/2/3 — build: aquí fallan las violaciones de `server-only` ──────
       - name: Build
-        run: pnpm -r build
+        run: ${{ inputs.package_manager }} run build
 
-      # ── INV-4/6/7 — invariantes de seguridad (backstop) ─────────────────────
+      # ── INV-4/6/7 — invariantes de seguridad (backstop) ──────────────────────
+      # Bloquea SOLO con reglas ERROR (alta confianza). Las WARNING se reportan
+      # sin romper el build: un gate con falsos positivos termina desactivado.
       - name: Semgrep (reglas de seguridad)
         run: |
+          if [ -f semgrep/security-rules.yml ]; then
+            CFG=semgrep/security-rules.yml
+          else
+            curl -fsSL -o /tmp/security-rules.yml \
+              https://raw.githubusercontent.com/svillaseca-capitalinteligente/security-standards-supabase/main/semgrep/security-rules.yml \
+              || { echo "::error::No pude obtener las reglas semgrep. Copia semgrep/security-rules.yml al repo o haz accesible el repo del estándar."; exit 1; }
+            CFG=/tmp/security-rules.yml
+          fi
           python -m pip install --quiet semgrep
-          semgrep scan --config ./semgrep/security-rules.yml --error --quiet
+          echo "── Reglas ERROR (bloqueantes) ──"
+          semgrep scan --config "$CFG" --severity ERROR --error --quiet
+          echo "── Reglas WARNING (informativas — revisar, no bloquean) ──"
+          semgrep scan --config "$CFG" --severity WARNING --quiet || true
 
-      # ── INV-6 — secretos: ni en el árbol ni en el historial ─────────────────
+      # ── INV-6 — secretos: ni en el árbol ni en el historial ──────────────────
       - name: Gitleaks (scan de secretos)
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # ── Cadena de suministro — deps con vulnerabilidades ────────────────────
+      # ── Cadena de suministro — deps con vulnerabilidades ─────────────────────
       - name: Dependency audit
-        run: pnpm audit --audit-level=high
+        run: |
+          if [ "${{ inputs.package_manager }}" = "pnpm" ]; then
+            pnpm audit --audit-level=high
+          else
+            npm audit --audit-level=high
+          fi
 
-  # ── INV-5 — test negativo de RLS (opcional; requiere secrets del proyecto) ──
-  # Verifica que la anon key NO puede leer las tablas de negocio vía PostgREST.
-  # Es la prueba auditable de que el vector anon/PostgREST está cerrado.
-  # Habilitar seteando los secrets SUPABASE_URL y SUPABASE_ANON_KEY en el repo.
+  # ── INV-5 — test negativo de RLS ───────────────────────────────────────────
+  # La prueba auditable de que el vector anon/PostgREST está cerrado.
+  # Si se declaran tablas pero faltan los secrets, FALLA (un gate que se
+  # auto-omite en silencio vuelve a ser prosa).
   rls-negative-test:
     runs-on: ubuntu-latest
-    if: ${{ github.event_name == 'pull_request' }}
+    if: inputs.protected_tables != ''
     steps:
       - name: anon NO debe leer tablas de negocio
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
-          # Coma-separado: las tablas que deben estar cerradas a anon.
-          PROTECTED_TABLES: "prospects,clients,opportunities,activities"
+          PROTECTED_TABLES: ${{ inputs.protected_tables }}
         run: |
           if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_ANON_KEY" ]; then
-            echo "::notice::RLS negative test omitido (faltan secrets SUPABASE_URL/ANON_KEY)."
-            exit 0
+            echo "::error::protected_tables declarado pero faltan los secrets SUPABASE_URL/SUPABASE_ANON_KEY. Configúralos o quita el input."
+            exit 1
           fi
           fail=0
           IFS=',' read -ra TABLES <<< "$PROTECTED_TABLES"
           for t in "${TABLES[@]}"; do
+            t=$(echo "$t" | xargs) # trim
             code=$(curl -s -o /dev/null -w "%{http_code}" \
               "$SUPABASE_URL/rest/v1/$t?select=*&limit=1" \
               -H "apikey: $SUPABASE_ANON_KEY" \

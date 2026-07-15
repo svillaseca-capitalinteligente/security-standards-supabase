@@ -1,0 +1,27 @@
+# Copiar este archivo al repo destino como .github/workflows/security-gate.yml
+# Es lo ÚNICO que se copia: la lógica vive en el repo del estándar y las mejoras
+# llegan solas. Activa branch protection exigiendo el check "gate" para que
+# build rojo = no merge.
+
+name: security-gate
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+
+concurrency:
+  group: security-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  security:
+    uses: svillaseca-capitalinteligente/security-standards-supabase/.github/workflows/security-gate.yml@main
+    with:
+      package_manager: npm # o pnpm
+      # Tablas de negocio que deben estar cerradas a anon (test negativo RLS).
+      # Agregar cada tabla nueva. Requiere secrets SUPABASE_URL y SUPABASE_ANON_KEY.
+      protected_tables: ""
+    secrets:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
