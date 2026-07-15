@@ -1,0 +1,74 @@
+# Semgrep — reglas de seguridad (starter, Supabase/Next).
+# Filosofía: la IA produce, la máquina es el portero. Cada regla traduce un
+# invariante a un check determinista. Correr en CI con --error para romper el build.
+#
+# Precisión honesta: las reglas ERROR son de alta confianza (fuga clara).
+# Las WARNING son heurísticas que exigen revisión — refinar por proyecto.
+# El gate PRIMARIO de "no dominio en el cliente" es `import "server-only"` +
+# el paso de build en CI; Semgrep es el backstop.
+
+rules:
+  # ── INV-6 — Secreto expuesto al bundle ────────────────────────────────────
+  - id: next-public-secret
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: >
+      Secreto expuesto al navegador: una variable NEXT_PUBLIC_* con nombre
+      sensible viaja al bundle. Quita el prefijo NEXT_PUBLIC_ y úsala server-side
+      (Edge Function). (INV-6)
+    pattern-regex: 'process\.env\.NEXT_PUBLIC_[A-Z0-9_]*(SERVICE_ROLE|SECRET|DATABASE_URL|API_?KEY|TOKEN|PASSWORD|PRIVATE)[A-Z0-9_]*'
+
+  # ── INV-4/6 — service_role fuera de un contexto de confianza ──────────────
+  - id: supabase-service-role-reference
+    languages: [typescript, javascript]
+    severity: WARNING
+    message: >
+      Referencia a SUPABASE_SERVICE_ROLE_KEY: solo permitido dentro de Edge
+      Functions / servidor de confianza, JAMÁS en código que se empaquete al
+      cliente. Verifica la ubicación del archivo. (INV-4/INV-6)
+    pattern-regex: 'SUPABASE_SERVICE_ROLE_KEY'
+
+  # ── INV-4 — Query sin columnas explícitas ─────────────────────────────────
+  - id: supabase-select-star
+    languages: [typescript, javascript]
+    severity: WARNING
+    message: >
+      select('*') sin columnas explícitas. Define columnas y filtro de scope
+      obligatorio (org_id/ownership). Sin queries sin criterio. (INV-4)
+    pattern-regex: "\\.select\\(\\s*['\"]\\*['\"]"
+
+  # ── INV-7 — Mock auth sin guard ───────────────────────────────────────────
+  - id: mock-auth-usage
+    languages: [typescript, javascript]
+    severity: WARNING
+    message: >
+      Uso de mock auth (NEXT_PUBLIC_MOCK_AUTH). Debe existir un guard que lance en
+      producción (throw si NODE_ENV==='production') + check de CI. Nunca confiar en
+      identidad mock con datos reales. (INV-7)
+    pattern-regex: 'NEXT_PUBLIC_MOCK_AUTH'
+
+  # ── INV-1/3 — Cliente Supabase de navegador leyendo tablas de negocio ─────
+  # Heurística: createBrowserClient/createClient en un archivo con "use client".
+  - id: supabase-client-in-use-client
+    languages: [typescript]
+    severity: WARNING
+    message: >
+      Cliente Supabase instanciado en un componente cliente ("use client"). El
+      navegador no debe hablar con la BD: mueve el acceso a una Edge Function y
+      consume su resultado. (INV-1/INV-3)
+    patterns:
+      - pattern-regex: '(createBrowserClient|createClient)\s*\('
+      - pattern-inside: |
+          "use client"
+          ...
+
+  # ── INV-2 — Objeto de usuario/identidad completo enviado al cliente ───────
+  # Heurística: exportar/definir un usuario hardcodeado con permisos/roles.
+  - id: hardcoded-user-with-permissions
+    languages: [typescript, javascript]
+    severity: WARNING
+    message: >
+      Objeto de usuario hardcodeado con permisos/roles/UUIDs. Si lo importa código
+      cliente, viaja al bundle (identidad + modelo RBAC). Resuelve el usuario
+      server-side y pasa al cliente solo { nombre, flags de UI }. (INV-2)
+    pattern-regex: '(permissionKeys|roleKeys|permissions)\s*:\s*\['

@@ -1,0 +1,8 @@
+{
+  "name": "security-standards",
+  "version": "0.1.0",
+  "description": "Estándar de desarrollo seguro para proyectos Supabase + Next.js: skill desarrollo-seguro (invariantes INV-1..8, golden paths, DoD auto-verificado). La skill guía a Claude en tiempo de generación; el CI del repo (security-gate.yml) es el backstop determinista.",
+  "author": {
+    "name": "Capital Inteligente"
+  }
+}

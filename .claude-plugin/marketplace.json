@@ -1,0 +1,13 @@
+{
+  "name": "security-standards",
+  "owner": {
+    "name": "Capital Inteligente"
+  },
+  "plugins": [
+    {
+      "name": "security-standards",
+      "source": "./",
+      "description": "Skill desarrollo-seguro: invariantes de seguridad Supabase + Next.js aplicados en tiempo de generación de código."
+    }
+  ]
+}
